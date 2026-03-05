@@ -338,3 +338,224 @@ KEY INSIGHT:
   You are not doing two separate parses
   One parse, two uses
 ```
+# Table Storage: Your Approach is Right
+
+---
+
+## Your Instinct is Correct
+
+```
+NOT EVERY TABLE NEEDS TO BE STORED AS STRUCTURED DATA
+MOST TABLES JUST NEED TO BE RETRIEVABLE AS TEXT
+
+The overhead of parsing every table into
+rows/columns/typed fields is not worth it
+for tables that will only ever be read, not computed on
+```
+
+---
+
+## Two Types of Tables in These Documents
+
+```
+TYPE 1: COMPUTATION TABLES
+  You will run arithmetic or comparisons on these
+  Examples:
+    Allocation breakdown (amounts, percentages)
+    Emissions by year (scope 1, 2, 3)
+    Impact metrics (values, units)
+    Capex breakdown (green vs fossil)
+
+  These need structured storage
+  You will query: WHERE category = 'Renewable Energy'
+  You will compute: SUM(amount), year over year change
+  You will compare: allocated vs raised
+
+TYPE 2: REFERENCE TABLES
+  You will read these but not compute on them
+  Examples:
+    Eligibility criteria table
+    ICMA alignment table in SPO
+    Project list table
+    SDG mapping table
+    Assurance scope table
+
+  These do NOT need structured storage
+  Just need to be retrievable as text
+  Pipe-concatenated string is perfect
+```
+
+---
+
+## Your Proposed Storage Approach
+
+```
+FOR TYPE 2 TABLES (reference, read-only):
+
+  doc_id      | table_id  | table_header        | table_content
+  ────────────────────────────────────────────────────────────────
+  uuid-001    | tbl_001   | Eligible Categories | Renewable Energy |
+              |           |                     | Solar, Wind, Hydro |
+              |           |                     | Min capacity 1MW ||
+              |           |                     | Green Buildings |
+              |           |                     | NZEB standard ||
+
+  PIPE SYMBOL USAGE:
+    Single pipe  |   separates cells within a row
+    Double pipe  ||  separates rows
+    Clean, readable, searchable
+    LLM can parse this easily when retrieved
+    No complex JSON, no nested structures
+```
+
+---
+
+## What to Store Per Table
+
+```
+COLUMNS FOR ALL TABLES (both types)
+
+  table_id          UUID
+  doc_id            UUID FK → documents
+  issuer_id         TEXT
+  document_type     TEXT
+  document_year     INT
+  page_number       INT
+  table_sequence    INT     (1st table, 2nd table on page)
+  table_header      TEXT    (text above table = likely title)
+  table_content     TEXT    (pipe-concatenated)
+  table_type        TEXT    (computation / reference)
+  row_count         INT
+  col_count         INT
+  needs_structured  BOOL    (does this need Type 1 treatment?)
+```
+
+---
+
+## Decision: Which Tables Get Structured Treatment
+
+```
+RULE:
+  If you will ever run SQL on the values → structured
+  If you will only ever retrieve and read → pipe text
+
+STRUCTURED (needs_structured = TRUE)
+  allocation_by_category    amounts + percentages
+  emissions_by_year         scope 1/2/3 numeric values
+  impact_metrics            metric values + units
+  capex_breakdown           green/fossil amounts
+  bond_terms_summary        issue size, dates
+
+PIPE TEXT (needs_structured = FALSE)
+  eligibility_criteria      read only, no computation
+  icma_alignment            read only, verdict text
+  project_list              read only, descriptive
+  sdg_mapping               read only, reference
+  assurance_scope           read only, reference
+  any_unknown_table         default to pipe text
+                            can always upgrade later
+```
+
+---
+
+## How This Reduces Overhead
+
+```
+BEFORE (store everything structured)
+  Every table → detect headers → type columns →
+  validate → create schema → insert rows
+  Fails on merged cells, irregular tables
+  Maintenance nightmare for 50+ tables across documents
+
+AFTER (your approach)
+  Every table → pipe concatenate → store one row
+  Simple, never fails, always retrievable
+  For the 5-6 tables that need computation:
+    ALSO parse into structured metrics tables
+    These are known, predictable tables
+    Worth the extra effort
+
+RESULT:
+  One simple table stores ALL tables as text
+  Five structured tables store COMPUTATION tables
+  No overhead for reference tables
+  LLM can read pipe text naturally
+```
+
+---
+
+## How Retrieval Uses This
+
+```
+Q&A: "What are the eligible categories for H&M?"
+
+RETRIEVAL:
+  Query gold_document_tables
+  WHERE issuer_id = 'hm'
+  AND document_type = 'green_bond_framework'
+  AND table_header LIKE '%eligible%'
+
+  Returns:
+  "Eligible Categories | Criteria | Threshold ||
+   Renewable Energy | Solar Wind Hydro | Min 1MW ||
+   Green Buildings | NZEB certified | EPC A rating ||
+   Clean Transport | Electric vehicles | Zero direct emissions"
+
+  LLM reads this naturally
+  No structured parsing needed
+  Answer is accurate and sourced
+```
+
+---
+
+## The Table Storage in Context of Full Pipeline
+
+```
+ai_parse_document
+  identifies Table elements
+        ↓
+FOR EACH TABLE ELEMENT:
+  Extract table_header (text above table)
+  Concatenate cells with pipe separator
+  Store in gold_document_tables (one row per table)
+  Classify: computation or reference?
+  IF computation:
+    ALSO parse into structured metrics table
+    (allocations, emissions, impact_metrics etc.)
+        ↓
+gold_document_tables     ← ALL tables, pipe text
+gold_extracted_metrics   ← COMPUTATION tables only, structured
+```
+
+---
+
+## Summary
+
+```
+YOUR UNDERSTANDING IS CORRECT
+
+Store ALL tables as:
+  doc_id + table_id + table_header + pipe_concatenated_content
+  One row per table
+  Simple, always works, LLM-readable
+
+For the small number of computation tables:
+  ALSO store as structured rows in metrics tables
+  Only 5-6 table types need this treatment
+  Known in advance, worth the extra parsing
+
+BENEFIT:
+  No complex table parsing for 80% of tables
+  Full structured querying for the 20% that need it
+  Single retrieval pattern for all table content
+  Reduced storage overhead
+  Reduced pipeline complexity
+```
+
+---
+
+**One row per table. Pipe-separated. Simple.**
+
+**Only parse to structured when you need to compute.**
+
+**Ready for Step 5: Field Extraction?**
