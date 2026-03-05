@@ -559,3 +559,173 @@ BENEFIT:
 **Only parse to structured when you need to compute.**
 
 **Ready for Step 5: Field Extraction?**
+# Revised Document Processing Flow
+
+---
+
+## The Workflow
+
+```
+INPUT
+  issuer_id + isin (provided)
+  PDF documents in folder
+        │
+        ▼
+STEP 1: ai_parse_document
+  PDF → typed elements
+    Title
+    NarrativeText
+    Table
+    ListItem
+    Header
+    Footer
+  Output → bronze_parsed_elements
+  One row per element
+  Carries: element_type, content, page_number, sequence_order
+        │
+        ▼
+STEP 2: DOCUMENT CLASSIFICATION
+  Input:  Title + NarrativeText elements from page 1-3
+  LLM assigns:
+    document_type     (one of 9 standard types)
+    document_year     (coverage year)
+    confidence
+  Output → documents table
+        │
+        ▼
+STEP 3: SECTION ASSEMBLY
+  Input:  all elements in sequence_order + document_type
+  Group elements under their nearest Header/Title
+  Assign section_type using document_type context
+  Output → silver_parsed_sections
+    section_id, section_name, section_type
+    page_start, page_end
+    element_ids[]
+        │
+        ▼
+        ├─────────────────────────┐
+        │                         │
+        ▼                         ▼
+STEP 4A: CHUNKING            STEP 4B: TABLE EXTRACTION
+  Input:                       Input:
+    silver_parsed_sections       bronze_parsed_elements
+    NarrativeText +              WHERE type = Table
+    ListItem elements
+    per section                Process:
+                                 Extract table_header
+  Process:                       (text above table)
+    Per section:                 Concatenate cells
+      recursive split            with pipe separator
+      at \n\n → \n → .           Classify table_type:
+      check size vs               computation?
+      section_type config         reference?
+      merge if < MIN
+      split if > MAX           Output →
+                               gold_document_tables
+  Output →                       One row per table
+  gold_document_chunks           pipe-concatenated
+
+        │                         │
+        └─────────────────────────┘
+                    │
+                    ▼
+STEP 5: FIELD EXTRACTION
+  Input:
+    silver_parsed_sections      (targeted section text)
+    gold_document_tables        (pipe text tables)
+    ListItem elements           (pre-parsed lists)
+
+  Process per document_type:
+    Target specific section_types
+    LLM extracts fields using
+    section text + relevant tables
+    as context
+
+  Two outputs:
+
+  OUTPUT A: gold_extracted_fields
+    All fields as key-value pairs
+    doc_id, issuer_id, field_name,
+    field_value, confidence
+
+  OUTPUT B: gold_extracted_metrics
+    Computation tables parsed to structured rows
+    Only for tables WHERE needs_structured = TRUE
+    allocations, emissions,
+    impact_metrics, capex_breakdown,
+    bond_terms, framework_details,
+    spo_details
+        │
+        ▼
+STEP 6: EMBEDDING
+  Input:  gold_document_chunks
+          WHERE embedding_status = pending
+  Batch embed chunk text
+  Write vectors → Vector Store
+  Update embedding_status = complete
+        │
+        ▼
+STEP 7: VALIDATION + FLAGS
+  Input:  gold_extracted_metrics
+          gold_extracted_fields
+          documents table
+  Run cross-checks:
+    Amount reconciliation
+    Framework version match
+    Category eligibility
+    Document completeness
+    Date logic
+  Output → flags table
+           document_inventory
+        │
+        ▼
+OUTPUT
+  gold_document_chunks      → Vector Store (RAG ready)
+  gold_document_tables      → Queryable table text
+  gold_extracted_metrics    → Structured for computation
+  gold_extracted_fields     → Key-value field store
+  flags                     → Verification findings
+  document_inventory        → What exists per issuer
+```
+
+---
+
+## The Delta Table Lineage
+
+```
+BRONZE                SILVER                    GOLD
+──────────────────────────────────────────────────────────────
+bronze_               silver_                   gold_
+parsed_elements       parsed_sections           document_chunks
+                                                document_tables
+                                                extracted_fields
+                                                extracted_metrics
+──────────────────────────────────────────────────────────────
+Raw parse output      Structured sections       Ready for use
+One row per element   One row per section       RAG + queries
+```
+
+---
+
+## Parallel Steps
+
+```
+CAN RUN IN PARALLEL:     4A + 4B (both depend on Step 3 only)
+MUST RUN IN SEQUENCE:    1 → 2 → 3 → 4 → 5 → 6 → 7
+ACROSS DOCUMENTS:        Each document fully parallel
+```
+
+---
+
+## What Each Step Depends On
+
+```
+STEP 1    depends on    PDF file
+STEP 2    depends on    STEP 1
+STEP 3    depends on    STEP 2
+STEP 4A   depends on    STEP 3
+STEP 4B   depends on    STEP 1 (Table elements already in bronze)
+STEP 5    depends on    STEP 3 + STEP 4B
+STEP 6    depends on    STEP 4A
+STEP 7    depends on    STEP 5 + STEP 6
+```
